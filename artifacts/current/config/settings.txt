@@ -1,0 +1,4 @@
+env=production
+version=v0.1.0
+debug=false
+feature_flag_release_assets=true

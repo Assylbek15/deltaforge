@@ -50,7 +50,7 @@ def reset_output_dir() -> None:
 def write_file(relative_path: str, content: str) -> None:
     target_path = OUTPUT_DIR / relative_path
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(content, encoding="utf-8")
+    target_path.write_text(content, encoding="utf-8", newline="\n")
     print(f"  [+] {relative_path}")
 
 

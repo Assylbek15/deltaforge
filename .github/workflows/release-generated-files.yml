@@ -3,6 +3,12 @@ name: Release Generated Files
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to rebuild assets for
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -23,12 +29,39 @@ jobs:
       - name: Prepare directories
         run: mkdir -p artifacts/current artifacts/previous artifacts/changed dist
 
+      - name: Resolve target release
+        id: target-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let tagName;
+            let releaseId;
+
+            if (context.eventName === "workflow_dispatch") {
+              tagName = context.payload.inputs.release_tag;
+
+              const { data: release } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tagName,
+              });
+
+              releaseId = release.id;
+            } else {
+              tagName = context.payload.release.tag_name;
+              releaseId = context.payload.release.id;
+            }
+
+            core.info(`Target release: ${tagName}`);
+            core.setOutput("tag", tagName);
+            core.setOutput("id", String(releaseId));
+
       - name: Find previous release with ALL_FILES.jar
         id: prev-release
         uses: actions/github-script@v7
         with:
           script: |
-            const currentReleaseId = context.payload.release.id;
+            const currentReleaseId = Number("${{ steps.target-release.outputs.id }}");
             const releases = await github.paginate(
               github.rest.repos.listReleases,
               {
@@ -71,7 +104,7 @@ jobs:
 
       - name: Generate artifacts for current release
         env:
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.target-release.outputs.tag }}
         run: python tools/generate_txt_files.py
 
       - name: Diff current vs previous
@@ -84,7 +117,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          gh release upload "${{ steps.target-release.outputs.tag }}" \
             dist/ALL_FILES.jar \
             dist/CHANGED_FILES.jar \
             --clobber

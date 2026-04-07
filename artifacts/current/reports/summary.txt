@@ -1,5 +1,0 @@
-Release Summary
----------------
-version: v0.1.0
-status: generated
-scope: release-artifacts

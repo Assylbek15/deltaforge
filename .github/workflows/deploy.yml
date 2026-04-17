@@ -1,0 +1,181 @@
+name: Deploy to Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to deploy (e.g. v1.1.0)
+        required: true
+        type: string
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [dev, test, prod]
+      deployment_type:
+        description: Hotfix skips the dev -> test -> prod promotion order check
+        required: true
+        type: choice
+        options: [standard, hotfix]
+        default: standard
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read current environment state
+        id: env-state
+        run: |
+          ENV_FILE="environments/${{ inputs.environment }}.json"
+          CURRENT=$(jq -r '.release // "none"' "$ENV_FILE")
+          echo "current_release=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Current ${{ inputs.environment }} release: $CURRENT"
+
+      - name: Validate standard promotion order
+        if: inputs.deployment_type == 'standard' && inputs.environment != 'dev'
+        run: |
+          if [ "${{ inputs.environment }}" = "test" ]; then
+            PREREQUISITE="dev"
+          else
+            PREREQUISITE="test"
+          fi
+
+          PREREQ_RELEASE=$(jq -r '.release // "none"' "environments/${PREREQUISITE}.json")
+
+          if [ "$PREREQ_RELEASE" = "none" ]; then
+            echo "[ERROR] '$PREREQUISITE' has never been deployed to."
+            echo "  Standard deployments require the dev -> test -> prod promotion order."
+            echo "  Deploy ${{ inputs.release_tag }} to $PREREQUISITE first."
+            echo "  To bypass this check for an emergency fix, use deployment_type=hotfix."
+            exit 1
+          fi
+
+          if [ "$PREREQ_RELEASE" != "${{ inputs.release_tag }}" ]; then
+            echo "[ERROR] Promotion order violation."
+            echo "  '$PREREQUISITE' is on '$PREREQ_RELEASE', not '${{ inputs.release_tag }}'."
+            echo "  Deploy ${{ inputs.release_tag }} to $PREREQUISITE before promoting to ${{ inputs.environment }}."
+            echo "  To bypass this check for an emergency fix, use deployment_type=hotfix."
+            exit 1
+          fi
+
+          echo "Promotion check passed: $PREREQUISITE is on ${{ inputs.release_tag }}"
+
+      - name: Resolve release chain
+        id: chain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CHAIN=$(python tools/resolve_deploy_chain.py \
+            --from-release "${{ steps.env-state.outputs.current_release }}" \
+            --to-release "${{ inputs.release_tag }}" \
+            --repo "${{ github.repository }}")
+
+          if [ -z "$CHAIN" ]; then
+            echo "${{ inputs.environment }} is already at ${{ inputs.release_tag }}. Nothing to do."
+            exit 0
+          fi
+
+          echo "Release chain to apply (oldest -> newest):"
+          echo "$CHAIN" | while IFS= read -r tag; do echo "  $tag"; done
+
+          echo "chain<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHAIN" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Download CHANGED_FILES.jar for each release in chain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/jars
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Downloading CHANGED_FILES.jar for $tag..."
+            gh release download "$tag" \
+              --repo "${{ github.repository }}" \
+              --pattern "CHANGED_FILES.jar" \
+              --dir "/tmp/jars/$tag" \
+              --clobber
+          done <<< "${{ steps.chain.outputs.chain }}"
+
+      - name: Compute net deploy diff
+        run: |
+          JAR_ARGS=""
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            JAR_ARGS="$JAR_ARGS /tmp/jars/$tag/CHANGED_FILES.jar"
+          done <<< "${{ steps.chain.outputs.chain }}"
+
+          python tools/compute_deploy_diff.py \
+            --jars $JAR_ARGS \
+            --output-dir /tmp/deploy/to_apply \
+            --output-manifest /tmp/deploy/net_manifest.json
+
+      - name: Show deployment plan
+        run: |
+          echo "================================================"
+          echo "  DEPLOYMENT PLAN"
+          echo "================================================"
+          echo "  Environment  : ${{ inputs.environment }}"
+          echo "  Type         : ${{ inputs.deployment_type }}"
+          echo "  From release : ${{ steps.env-state.outputs.current_release }}"
+          echo "  To release   : ${{ inputs.release_tag }}"
+          echo "================================================"
+          echo ""
+          cat /tmp/deploy/net_manifest.json
+
+      - name: Apply deployment (simulation)
+        run: |
+          echo ""
+          echo "=== Simulating deployment to ${{ inputs.environment }} ==="
+          echo "In production this step pushes files to the target system."
+          echo ""
+
+          find /tmp/deploy/to_apply -type f | sort | while read -r f; do
+            echo "  [apply]  ${f#/tmp/deploy/to_apply/}"
+          done
+
+          DELETES=$(jq -r '.net_changes.delete[]?' /tmp/deploy/net_manifest.json)
+          if [ -n "$DELETES" ]; then
+            echo "$DELETES" | while IFS= read -r d; do
+              echo "  [delete] $d"
+            done
+          fi
+
+      - name: Record deployment in environment state
+        run: |
+          DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          jq -n \
+            --arg release       "${{ inputs.release_tag }}" \
+            --arg deployed_at   "$DEPLOYED_AT" \
+            --arg deployed_by   "${{ github.actor }}" \
+            --arg prev_release  "${{ steps.env-state.outputs.current_release }}" \
+            --arg deploy_type   "${{ inputs.deployment_type }}" \
+            --arg run_id        "${{ github.run_id }}" \
+            '{
+              release:          $release,
+              deployed_at:      $deployed_at,
+              deployed_by:      $deployed_by,
+              previous_release: $prev_release,
+              deployment_type:  $deploy_type,
+              workflow_run_id:  $run_id
+            }' > "environments/${{ inputs.environment }}.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "environments/${{ inputs.environment }}.json"
+          git commit -m "deploy(${{ inputs.environment }}): ${{ steps.env-state.outputs.current_release }} -> ${{ inputs.release_tag }} [${{ inputs.deployment_type }}]"
+          git push

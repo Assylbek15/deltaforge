@@ -102,10 +102,10 @@ jobs:
         if: steps.prev-release.outputs.found != 'true'
         run: echo "No previous ALL_FILES.jar found. Proceeding with first-release behavior."
 
-      - name: Generate artifacts for current release
+      - name: Fetch dependencies and generate artifacts
         env:
           VERSION: ${{ steps.target-release.outputs.tag }}
-        run: python tools/generate_txt_files.py
+        run: python tools/fetch_deps.py
 
       - name: Diff current vs previous
         run: python tools/diff_generated_files.py

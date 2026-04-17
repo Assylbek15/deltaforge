@@ -1,0 +1,16 @@
+{
+  "dependencies": [
+    {
+      "name": "jobs-alpha",
+      "repo": "Assylbek15/jobs-alpha",
+      "tag": "v1.0.0",
+      "local_path": "../jobs-alpha"
+    },
+    {
+      "name": "jobs-beta",
+      "repo": "Assylbek15/jobs-beta",
+      "tag": "v1.0.0",
+      "local_path": "../jobs-beta"
+    }
+  ]
+}

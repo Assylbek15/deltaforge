@@ -195,7 +195,7 @@ def main() -> None:
     ensure_directory_if_present(CHANGED_DIR)
 
     if not CURRENT_DIR.exists() or not has_any_files(CURRENT_DIR):
-        fail(f"{CURRENT_DIR}/ is missing or contains no files. Run generate_txt_files.py first.")
+        fail(f"{CURRENT_DIR}/ is missing or contains no files. Run fetch_deps.py first.")
 
     print(f"Indexing {CURRENT_DIR}/...")
     current_index = index_directory(CURRENT_DIR)

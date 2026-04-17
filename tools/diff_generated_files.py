@@ -18,23 +18,28 @@ Behavior:
 - If artifacts/previous/ is missing or empty, all current files are treated
   as ADDED (first-release behavior).
 - artifacts/changed/ is reset on every run.
-- Only ADDED and MODIFIED files are copied into artifacts/changed/.
-- DELETED files are reported but not materialized.
+- ADDED and MODIFIED files are copied into artifacts/changed/.
+- DELETED paths are recorded in manifest.json but not materialized as files.
+- manifest.json is always written to artifacts/changed/ so downstream tools
+  (compute_deploy_diff.py) can chain releases without downloading ALL_FILES.jar.
 
 Exit codes:
 - 0: success
 - 1: unrecoverable error (for example, artifacts/current/ missing or empty)
 
 Usage:
-    python tools/diff_generated_files.py
+    VERSION=v1.1.0 PREVIOUS_VERSION=v1.0.0 python tools/diff_generated_files.py
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import shutil
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 
@@ -74,9 +79,6 @@ def has_any_files(directory: Path) -> bool:
 
 
 def sha256(path: Path) -> str:
-    """
-    Return the SHA-256 hash of a file, streamed in fixed-size chunks.
-    """
     digest = hashlib.sha256()
     with path.open("rb") as file_obj:
         while chunk := file_obj.read(HASH_BUFFER_SIZE):
@@ -85,12 +87,6 @@ def sha256(path: Path) -> str:
 
 
 def index_directory(directory: Path) -> dict[Path, str]:
-    """
-    Build a mapping of relative file path -> SHA-256 hash for all files
-    under the given directory.
-
-    Returns an empty mapping if the directory does not exist.
-    """
     if not directory.exists():
         return {}
 
@@ -106,9 +102,6 @@ def compute_diff(
     current_index: dict[Path, str],
     previous_index: dict[Path, str],
 ) -> list[FileDiff]:
-    """
-    Compare two file indexes and classify each path.
-    """
     diffs: list[FileDiff] = []
 
     current_paths = set(current_index)
@@ -139,10 +132,6 @@ def reset_changed_dir() -> None:
 
 
 def materialize_changed_files(diffs: list[FileDiff]) -> None:
-    """
-    Copy ADDED and MODIFIED files from CURRENT_DIR into CHANGED_DIR while
-    preserving relative paths.
-    """
     for diff in diffs:
         if diff.status not in {FileStatus.ADDED, FileStatus.MODIFIED}:
             continue
@@ -151,6 +140,37 @@ def materialize_changed_files(diffs: list[FileDiff]) -> None:
         destination_path = CHANGED_DIR / diff.relative_path
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, destination_path)
+
+
+def posix_path(p: Path) -> str:
+    return p.as_posix()
+
+
+def write_manifest(diffs: list[FileDiff], release: str, previous_release: str) -> None:
+    """
+    Write manifest.json into artifacts/changed/ recording every change category.
+
+    Deletions are stored here even though no file is materialized — this is
+    what compute_deploy_diff.py reads to chain releases without ALL_FILES.jar.
+    """
+    by_status: dict[FileStatus, list[str]] = {s: [] for s in FileStatus}
+    for diff in diffs:
+        by_status[diff.status].append(posix_path(diff.relative_path))
+
+    manifest = {
+        "release": release,
+        "previous_release": previous_release,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "changes": {
+            "added": sorted(by_status[FileStatus.ADDED]),
+            "modified": sorted(by_status[FileStatus.MODIFIED]),
+            "deleted": sorted(by_status[FileStatus.DELETED]),
+        },
+    }
+
+    manifest_path = CHANGED_DIR / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"  manifest written to {manifest_path}")
 
 
 _STATUS_LABELS: dict[FileStatus, str] = {
@@ -197,6 +217,9 @@ def main() -> None:
     if not CURRENT_DIR.exists() or not has_any_files(CURRENT_DIR):
         fail(f"{CURRENT_DIR}/ is missing or contains no files. Run fetch_deps.py first.")
 
+    release = os.environ.get("VERSION", "unknown")
+    previous_release = os.environ.get("PREVIOUS_VERSION", "unknown")
+
     print(f"Indexing {CURRENT_DIR}/...")
     current_index = index_directory(CURRENT_DIR)
 
@@ -215,6 +238,7 @@ def main() -> None:
 
     reset_changed_dir()
     materialize_changed_files(diffs)
+    write_manifest(diffs, release=release, previous_release=previous_release)
     print_summary(diffs, first_release)
 
     print(f"\nChanged files written to {CHANGED_DIR}/")

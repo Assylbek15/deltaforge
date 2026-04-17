@@ -110,6 +110,9 @@ jobs:
         run: python tools/fetch_deps.py
 
       - name: Diff current vs previous
+        env:
+          VERSION: ${{ steps.target-release.outputs.tag }}
+          PREVIOUS_VERSION: ${{ steps.prev-release.outputs.tag }}
         run: python tools/diff_generated_files.py
 
       - name: Create archives

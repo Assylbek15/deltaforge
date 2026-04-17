@@ -68,17 +68,23 @@ def run_generator(
     source_commit: str,
     release_version: str,
 ) -> None:
+    # Metadata is passed via env vars so older generators that predate
+    # traceability can still run without argument errors.
     subprocess.run(
         [
             sys.executable,
             str(dep_dir / "generate.py"),
             "--output-dir", str(output_dir),
             "--version", dep_tag,
-            "--source-commit", source_commit,
-            "--release-version", release_version,
         ],
         check=True,
-        env={**os.environ, "VERSION": dep_tag, "PYTHONIOENCODING": "utf-8"},
+        env={
+            **os.environ,
+            "VERSION": dep_tag,
+            "PYTHONIOENCODING": "utf-8",
+            "SOURCE_COMMIT": source_commit,
+            "RELEASE_VERSION": release_version,
+        },
     )
 
 

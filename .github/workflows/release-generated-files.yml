@@ -18,17 +18,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Prepare directories
-        run: mkdir -p artifacts/current artifacts/previous artifacts/changed dist
-
       - name: Resolve target release
         id: target-release
         uses: actions/github-script@v7
@@ -55,6 +44,19 @@ jobs:
             core.info(`Target release: ${tagName}`);
             core.setOutput("tag", tagName);
             core.setOutput("id", String(releaseId));
+
+      - name: Checkout repository at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target-release.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare directories
+        run: mkdir -p artifacts/current artifacts/previous artifacts/changed dist
 
       - name: Find previous release with ALL_FILES.jar
         id: prev-release

@@ -51,20 +51,39 @@ def resolve_dep_dir(dep: dict) -> Path:
     return dest
 
 
-def run_generator(dep_dir: Path, output_dir: Path, version: str) -> None:
+def get_commit_hash(repo_dir: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def run_generator(
+    dep_dir: Path,
+    output_dir: Path,
+    dep_tag: str,
+    source_commit: str,
+    release_version: str,
+) -> None:
     subprocess.run(
         [
             sys.executable,
             str(dep_dir / "generate.py"),
             "--output-dir", str(output_dir),
-            "--version", version,
+            "--version", dep_tag,
+            "--source-commit", source_commit,
+            "--release-version", release_version,
         ],
         check=True,
-        env={**os.environ, "VERSION": version, "PYTHONIOENCODING": "utf-8"},
+        env={**os.environ, "VERSION": dep_tag, "PYTHONIOENCODING": "utf-8"},
     )
 
 
 def main() -> None:
+    release_version = os.environ.get("VERSION", "unknown")
     deps = json.loads(DEPS_FILE.read_text(encoding="utf-8"))["dependencies"]
 
     if ARTIFACTS_CURRENT.exists():
@@ -76,12 +95,14 @@ def main() -> None:
         print(f"\n[{name}] version={tag}")
 
         dep_dir = resolve_dep_dir(dep)
+        commit_hash = get_commit_hash(dep_dir)
+        print(f"  commit: {commit_hash}")
+
         output_dir = ARTIFACTS_CURRENT / name
-
         print(f"  generating into artifacts/current/{name}/")
-        run_generator(dep_dir, output_dir, tag)
+        run_generator(dep_dir, output_dir, tag, commit_hash, release_version)
 
-    print(f"\nAll artifacts written to artifacts/current/")
+    print("\nAll artifacts written to artifacts/current/")
 
 
 if __name__ == "__main__":
